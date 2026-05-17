@@ -1,0 +1,308 @@
+"""
+Modèle SIR étendu — Propagation d'opérations d'influence numériques (psyops)
+=============================================================================
+
+Compartiments :
+  S  — Susceptibles   : population exposable, pas encore influencée
+  I  — Influencés     : propagent activement le narratif (partages, engagement)
+  R  — Résistants     : ont développé un esprit critique / fact-checking
+
+Extensions par rapport au SIR classique :
+  - delta  : perte de résistance (la vigilance s'effrite avec le temps → SIRS)
+  - amp    : amplification algorithmique (recommandations, bulles de filtre)
+  - sigma  : taux d'exposition externe (bots, campagnes sponsorisées)
+
+Équations différentielles :
+  dS/dt = -β·amp·S·I  - σ·S  + δ·R
+  dI/dt = +β·amp·S·I  + σ·S  - γ·I
+  dR/dt = +γ·I                - δ·R
+
+  R₀ = β·amp / γ  (nombre de reproduction de base)
+"""
+
+import numpy as np
+from scipy.integrate import solve_ivp
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+
+
+# ─── Paramètres par défaut ────────────────────────────────────────────────────
+
+DEFAULT_PARAMS = {
+    "beta":      0.35,   # taux de transmission (contact entre S et I)
+    "gamma":     0.10,   # taux de résistance / récupération
+    "delta":     0.00,   # taux de perte de résistance (0 = SIR classique)
+    "amp":       1.0,    # multiplicateur algorithmique (1 = aucun boost)
+    "sigma":     0.00,   # pression externe : bots / pub (force d'infection indép. de I)
+    "I0":        0.04,   # fraction initiale de la population influencée
+    "R0_init":   0.00,   # fraction initiale de résistants (immunité préexistante)
+    "N":         1_000_000,  # taille de la population (pour les calculs absolus)
+    "t_max":     180,    # durée de simulation en jours
+}
+
+
+# ─── Modèle SIR étendu ────────────────────────────────────────────────────────
+
+def sir_psyops(t, y, beta, gamma, delta, amp, sigma):
+    """
+    Système d'équations différentielles du modèle SIR-psyops.
+
+    Parameters
+    ----------
+    t     : float          — temps courant (jours)
+    y     : array [S, I, R] — état normalisé (fractions entre 0 et 1)
+    beta  : float          — taux de contact/transmission
+    gamma : float          — taux de résistance
+    delta : float          — perte de résistance (retour S←R)
+    amp   : float          — amplification algorithmique
+    sigma : float          — infection exogène (bots, médias)
+
+    Returns
+    -------
+    [dS/dt, dI/dt, dR/dt]
+    """
+    S, I, R = y
+    beta_eff = beta * amp                 # beta corrigé par l'algo
+
+    dS = -beta_eff * S * I - sigma * S + delta * R
+    dI =  beta_eff * S * I + sigma * S - gamma * I
+    dR =  gamma * I                      - delta * R
+
+    # Conservation de la masse (S+I+R = 1 à tout instant)
+    return [dS, dI, dR]
+
+
+def run_simulation(params: dict = None) -> dict:
+    """
+    Lance la simulation SIR-psyops.
+
+    Parameters
+    ----------
+    params : dict — surcharge des paramètres par défaut (DEFAULT_PARAMS)
+
+    Returns
+    -------
+    dict avec clés :
+        t, S, I, R   — séries temporelles (fractions 0-1)
+        R0           — nombre de reproduction de base
+        peak_I       — pic d'influence (fraction)
+        peak_day     — jour du pic
+        final_S/I/R  — état final
+        params       — paramètres utilisés
+    """
+    p = {**DEFAULT_PARAMS, **(params or {})}
+
+    S0 = 1.0 - p["I0"] - p["R0_init"]
+    I0 = p["I0"]
+    R0_init = p["R0_init"]
+
+    assert S0 >= 0, "I0 + R0_init ne peut pas dépasser 1.0"
+
+    sol = solve_ivp(
+        fun=sir_psyops,
+        t_span=(0, p["t_max"]),
+        y0=[S0, I0, R0_init],
+        args=(p["beta"], p["gamma"], p["delta"], p["amp"], p["sigma"]),
+        method="RK45",
+        dense_output=True,
+        max_step=0.5,
+    )
+
+    t = np.linspace(0, p["t_max"], p["t_max"] * 2 + 1)
+    S, I, R = sol.sol(t)
+
+    R0 = (p["beta"] * p["amp"]) / p["gamma"]
+    peak_idx = np.argmax(I)
+
+    return {
+        "t": t,
+        "S": S, "I": I, "R": R,
+        "R0": R0,
+        "peak_I": I[peak_idx],
+        "peak_day": t[peak_idx],
+        "final_S": S[-1],
+        "final_I": I[-1],
+        "final_R": R[-1],
+        "params": p,
+    }
+
+
+# ─── Visualisation ────────────────────────────────────────────────────────────
+
+def plot_simulation(result: dict, title: str = "Propagation d'une opération d'influence — modèle SIR"):
+    """Trace les courbes SIR + annotations épidémiologiques."""
+
+    p = result["params"]
+    t = result["t"]
+
+    fig = plt.figure(figsize=(14, 8))
+    gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.45, wspace=0.35)
+
+    # ── Courbe principale ──────────────────────────────────────────────────────
+    ax1 = fig.add_subplot(gs[0, :])
+    ax1.plot(t, result["S"] * 100, color="#378ADD", lw=2.5, label="S — Susceptibles")
+    ax1.plot(t, result["I"] * 100, color="#D85A30", lw=2.5, label="I — Influencés actifs")
+    ax1.plot(t, result["R"] * 100, color="#1D9E75", lw=2.5, label="R — Résistants / résolus")
+
+    ax1.axvline(result["peak_day"], color="#D85A30", lw=1, ls="--", alpha=0.6)
+    ax1.annotate(
+        f"Pic : {result['peak_I']*100:.1f}%\n(jour {result['peak_day']:.0f})",
+        xy=(result["peak_day"], result["peak_I"] * 100),
+        xytext=(result["peak_day"] + p["t_max"] * 0.05, result["peak_I"] * 100 + 5),
+        fontsize=9, color="#D85A30",
+        arrowprops=dict(arrowstyle="->", color="#D85A30", lw=0.8),
+    )
+
+    ax1.set_xlabel("Jours", fontsize=11)
+    ax1.set_ylabel("% de la population", fontsize=11)
+    ax1.set_ylim(0, 105)
+    ax1.set_xlim(0, p["t_max"])
+    ax1.legend(loc="center right", fontsize=10)
+    ax1.set_title(title, fontsize=13, fontweight="bold", pad=10)
+    ax1.grid(alpha=0.2)
+
+    R0_txt = f"R₀ = {result['R0']:.2f}"
+    ax1.text(
+        0.02, 0.95, R0_txt,
+        transform=ax1.transAxes, fontsize=11, fontweight="bold",
+        color=("#D85A30" if result["R0"] > 1 else "#1D9E75"),
+        va="top",
+        bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.7, ec="none"),
+    )
+
+    # ── Tableau de paramètres ──────────────────────────────────────────────────
+    ax2 = fig.add_subplot(gs[1, 0])
+    ax2.axis("off")
+    rows = [
+        ["Paramètre", "Valeur", "Interprétation (psyops)"],
+        ["β (beta)",    f"{p['beta']:.3f}",  "Probabilité qu'un S devienne I au contact d'un I"],
+        ["γ (gamma)",   f"{p['gamma']:.3f}", "Taux de fact-checking / désengagement"],
+        ["δ (delta)",   f"{p['delta']:.3f}", "Retour à la vulnérabilité (oubli, fatigue)"],
+        ["Amplif. algo", f"{p['amp']:.1f}×", "Boost algorithmique (recommandations)"],
+        ["σ (sigma)",   f"{p['sigma']:.4f}", "Injection externe (bots, publicité)"],
+        ["I₀",          f"{p['I0']*100:.1f}%", "Noyau initial de la campagne"],
+        ["R₀",          f"{result['R0']:.2f}", "> 1 = propagation autonome"],
+    ]
+    tbl = ax2.table(
+        cellText=rows[1:],
+        colLabels=rows[0],
+        cellLoc="left",
+        loc="center",
+        colWidths=[0.28, 0.18, 0.54],
+    )
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(8.5)
+    tbl.scale(1, 1.5)
+    for (row, col), cell in tbl.get_celld().items():
+        cell.set_edgecolor("#dddddd")
+        if row == 0:
+            cell.set_facecolor("#f0f0f0")
+            cell.set_text_props(fontweight="bold")
+
+    # ── Phase portrait S vs I ──────────────────────────────────────────────────
+    ax3 = fig.add_subplot(gs[1, 1])
+    scatter = ax3.scatter(
+        result["S"] * 100, result["I"] * 100,
+        c=t, cmap="plasma", s=4, alpha=0.7
+    )
+    fig.colorbar(scatter, ax=ax3, label="Jours", shrink=0.8)
+    ax3.set_xlabel("Susceptibles (%)", fontsize=10)
+    ax3.set_ylabel("Influencés (%)", fontsize=10)
+    ax3.set_title("Portrait de phase S–I", fontsize=10)
+    ax3.grid(alpha=0.2)
+
+    plt.suptitle(
+        f"État final — S: {result['final_S']*100:.1f}%  I: {result['final_I']*100:.1f}%  R: {result['final_R']*100:.1f}%",
+        y=0.01, fontsize=9, color="gray"
+    )
+
+    plt.savefig("/mnt/user-data/outputs/sir_psyops.png", dpi=150, bbox_inches="tight")
+    plt.show()
+    print(f"Figure sauvegardée → sir_psyops.png")
+
+
+# ─── Analyse de scénarios ─────────────────────────────────────────────────────
+
+def compare_scenarios(scenarios: list[dict], labels: list[str] = None):
+    """
+    Compare plusieurs scénarios sur le même graphe.
+
+    Parameters
+    ----------
+    scenarios : liste de dicts de paramètres
+    labels    : noms des scénarios
+
+    Exemple
+    -------
+    compare_scenarios([
+        {"beta": 0.2, "amp": 1.0},
+        {"beta": 0.2, "amp": 3.0},
+        {"beta": 0.2, "amp": 3.0, "delta": 0.02},
+    ], ["Sans algo", "Avec algo ×3", "Algo + perte de résistance"])
+    """
+    if labels is None:
+        labels = [f"Scénario {i+1}" for i in range(len(scenarios))]
+
+    colors = ["#378ADD", "#D85A30", "#1D9E75", "#9B59B6", "#F39C12"]
+    linestyles = ["-", "--", "-.", ":", (0, (3, 1, 1, 1))]
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    compartments = [("S", "Susceptibles"), ("I", "Influencés actifs"), ("R", "Résistants")]
+
+    results = [run_simulation(s) for s in scenarios]
+
+    for ax, (key, name) in zip(axes, compartments):
+        for i, (res, label) in enumerate(zip(results, labels)):
+            ax.plot(
+                res["t"], res[key] * 100,
+                color=colors[i % len(colors)],
+                ls=linestyles[i % len(linestyles)],
+                lw=2, label=f"{label} (R₀={res['R0']:.2f})"
+            )
+        ax.set_title(name, fontsize=11)
+        ax.set_xlabel("Jours")
+        ax.set_ylabel("%")
+        ax.set_ylim(0, 105)
+        ax.grid(alpha=0.2)
+        ax.legend(fontsize=8)
+
+    plt.suptitle("Comparaison de scénarios — propagation d'influence", fontsize=13, fontweight="bold")
+    plt.tight_layout()
+    plt.savefig("/mnt/user-data/outputs/sir_psyops_scenarios.png", dpi=150, bbox_inches="tight")
+    plt.show()
+    print("Comparaison sauvegardée → sir_psyops_scenarios.png")
+
+    for res, label in zip(results, labels):
+        print(f"\n{label}:")
+        print(f"  R₀ = {res['R0']:.2f}  |  pic I = {res['peak_I']*100:.1f}% (j{res['peak_day']:.0f})")
+        print(f"  Final — S: {res['final_S']*100:.1f}%  I: {res['final_I']*100:.1f}%  R: {res['final_R']*100:.1f}%")
+
+
+# ─── Point d'entrée ───────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+
+    # ── Simulation de base ────────────────────────────────────────────────────
+    print("=== Simulation de base ===")
+    result = run_simulation()
+    print(f"R₀ = {result['R0']:.2f}")
+    print(f"Pic d'influence : {result['peak_I']*100:.1f}% au jour {result['peak_day']:.0f}")
+    print(f"État final → S: {result['final_S']*100:.1f}%  I: {result['final_I']*100:.1f}%  R: {result['final_R']*100:.1f}%")
+    plot_simulation(result)
+
+    # ── Comparaison de scénarios ──────────────────────────────────────────────
+    print("\n=== Comparaison de scénarios ===")
+    compare_scenarios(
+        scenarios=[
+            {"beta": 0.20, "gamma": 0.10, "amp": 1.0},
+            {"beta": 0.20, "gamma": 0.10, "amp": 3.0},
+            {"beta": 0.20, "gamma": 0.10, "amp": 3.0, "delta": 0.02},
+            {"beta": 0.20, "gamma": 0.10, "amp": 3.0, "sigma": 0.005},
+        ],
+        labels=[
+            "Base (sans algo)",
+            "Amplif. algo ×3",
+            "Algo + perte résistance",
+            "Algo + bots",
+        ],
+    )
